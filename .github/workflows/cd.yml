@@ -1,0 +1,52 @@
+name: CD Pipeline
+ 
+on:
+  push:
+    branches:
+      - main  # Run this workflow when code is merged into main
+ 
+jobs:
+  deploy:  # Job name must be exactly "deploy"
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+ 
+      - name: Set up AWS CLI
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install --update  # <-- Add --update flag
+          aws --version
+ 
+      - name: Set up SSH Key
+        run: |
+          echo "${{ secrets.PRIVATE_KEY_PEM }}" > private_key.pem
+          chmod 600 private_key.pem
+ 
+      - name: Configure AWS Credentials
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws configure set default.region ${{ secrets.AWS_REGION }}
+ 
+ 
+      - name: Authenticate with DockerHub
+        run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+ 
+      - name: Build and Push Docker Image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/fastapi-app:latest .
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/fastapi-app:latest
+ 
+      - name: Deploy to EC2
+        run: |
+          ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+          sudo docker stop fastapi-container || true
+          sudo docker rm fastapi-container || true
+          sudo docker rmi ${{ secrets.DOCKERHUB_USERNAME }}/fastapi-app:latest || true  # Remove old image
+          sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/fastapi-app:latest  # Pull new image
+          sudo docker run -d --name fastapi-container -p 80:80 -p 127.0.0.1:8000:8000 ${{ secrets.DOCKERHUB_USERNAME }}/fastapi-app:latest
+          EOF
